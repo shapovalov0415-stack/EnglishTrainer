@@ -3,19 +3,40 @@
   "version": "1.0.0",
   "main": "index.ts",
   "scripts": {
-    "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web"
+    "start": "expo start --port 8081",
+    "start:lan": "expo start --lan --clear --port 8081",
+    "exp:go-url": "node scripts/print-expo-go-url.mjs",
+    "android": "expo start --android --port 8081",
+    "ios": "expo start --ios --port 8081",
+    "web": "expo start --web --port 8081",
+    "server:dev": "npm run dev --prefix server",
+    "server:start": "npm run start --prefix server"
   },
   "dependencies": {
+    "@expo/ngrok": "^4.1.0",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-navigation/bottom-tabs": "^7.15.9",
+    "@react-navigation/native": "^7.2.2",
+    "@react-navigation/native-stack": "^7.14.11",
     "expo": "~54.0.33",
+    "expo-av": "^16.0.8",
+    "expo-build-properties": "~1.0.10",
+    "expo-document-picker": "~14.0.8",
+    "expo-file-system": "~19.0.21",
+    "expo-linking": "~8.0.11",
+    "expo-sharing": "~14.0.8",
+    "expo-speech": "~14.0.8",
+    "expo-sqlite": "~16.0.10",
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
-    "react-native": "0.81.5"
+    "react-native": "0.81.5",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.16.0"
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
+    "babel-plugin-inline-dotenv": "^1.7.0",
+    "babel-preset-expo": "~54.0.10",
     "typescript": "~5.9.2"
   },
   "private": true
