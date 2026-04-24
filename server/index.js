@@ -60,12 +60,16 @@ app.post('/chat/claude', async (req, res) => {
       return res.status(400).json({ error: 'messages must be a non-empty array' });
     }
 
-    const response = await anthropic.messages.create({
-      model,
-      max_tokens: typeof maxTokens === 'number' ? maxTokens : 1024,
-      system: typeof system === 'string' ? system : undefined,
-      messages,
-    });
+    const response = await callClaudeWithRetry(
+      () =>
+        anthropic.messages.create({
+          model,
+          max_tokens: typeof maxTokens === 'number' ? maxTokens : 1024,
+          system: typeof system === 'string' ? system : undefined,
+          messages,
+        }),
+      '/chat/claude',
+    );
 
     const textBlock = response.content.find((block) => block.type === 'text');
     const text = textBlock?.type === 'text' ? textBlock.text : '';
@@ -244,16 +248,20 @@ app.post('/analyze', async (req, res) => {
 
     console.log(`[analyze] Analyzing transcript (${transcript.length} chars)`);
 
-    const response = await anthropic.messages.create({
-      model,
-      max_tokens: 2048,
-      messages: [
-        {
-          role: 'user',
-          content: `${ANALYZE_PROMPT}\n\n--- TRANSCRIPT ---\n${transcript}`,
-        },
-      ],
-    });
+    const response = await callClaudeWithRetry(
+      () =>
+        anthropic.messages.create({
+          model,
+          max_tokens: 2048,
+          messages: [
+            {
+              role: 'user',
+              content: `${ANALYZE_PROMPT}\n\n--- TRANSCRIPT ---\n${transcript}`,
+            },
+          ],
+        }),
+      '/analyze',
+    );
 
     const textBlock = response.content.find((b) => b.type === 'text');
     const raw = textBlock?.type === 'text' ? textBlock.text : '';
@@ -396,19 +404,26 @@ app.post('/analyze-video', upload.single('file'), async (req, res) => {
 
     tmpFiles.push(framesDir);
 
-    const response = await anthropic.messages.create({
-      model,
-      max_tokens: 4096,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            ...imageContents,
-            { type: 'text', text: OCR_PROMPT },
-          ],
-        },
-      ],
-    });
+    // Vision 呼び出しは Queue + Retry で保護（レートリミット対策）
+    const response = await runWithClaudeVisionQueue(() =>
+      callClaudeWithRetry(
+        () =>
+          anthropic.messages.create({
+            model,
+            max_tokens: 4096,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  ...imageContents,
+                  { type: 'text', text: OCR_PROMPT },
+                ],
+              },
+            ],
+          }),
+        '/analyze-video',
+      ),
+    );
 
     const textBlock = response.content.find((b) => b.type === 'text');
     const raw = textBlock?.type === 'text' ? textBlock.text : '';
@@ -587,15 +602,25 @@ async function processLocalVideoForJob(jobId, videoPath) {
       };
     });
 
-    const ocrResponse = await anthropic.messages.create({
-      model,
-      max_tokens: 4096,
-      messages: [
-        {
-          role: 'user',
-          content: [...imageContents, { type: 'text', text: OCR_PROMPT }],
-        },
-      ],
+    // Claude Vision 呼び出しは queue で直列化 + 429 リトライ。
+    // 複数ジョブ並列投入時でもレートリミットを突き抜けないようにする。
+    setJob(jobId, { stage: 'OCR 順番待ち（レート制限対策）' });
+    const ocrResponse = await runWithClaudeVisionQueue(async () => {
+      setJob(jobId, { stage: '画面テキスト読み取り中' });
+      return callClaudeWithRetry(
+        () =>
+          anthropic.messages.create({
+            model,
+            max_tokens: 4096,
+            messages: [
+              {
+                role: 'user',
+                content: [...imageContents, { type: 'text', text: OCR_PROMPT }],
+              },
+            ],
+          }),
+        `job ${jobId} OCR`,
+      );
     });
 
     const ocrBlock = ocrResponse.content.find((b) => b.type === 'text');
