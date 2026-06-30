@@ -269,9 +269,7 @@ app.post('/analyze', async (req, res) => {
       return res.status(502).json({ error: 'Claude returned empty content' });
     }
 
-    // コードフェンス除去 → JSON パース
-    const stripped = raw.replace(/```(?:json)?\s*/g, '').replace(/```/g, '');
-    const parsed = JSON.parse(stripped);
+    const parsed = safeParseClaudeJson(raw, 'analyze');
 
     console.log(`[analyze] Extracted ${parsed.phrases?.length ?? 0} phrases`);
 
@@ -297,6 +295,45 @@ function runFfmpeg(args) {
       else resolve(stdout);
     });
   });
+}
+
+/**
+ * Claude のレスポンス文字列から JSON オブジェクトを取り出して parse する。
+ *
+ *  1. ```json ... ``` のコードフェンスを除去
+ *  2. trim して直接 JSON.parse を試す
+ *  3. 失敗したら最初の `{` から最後の `}` までを抽出して再試行（前後に説明文が
+ *     紛れるケースを救う）
+ *  4. それでもダメなら、原因究明のために raw の先頭/末尾を Render ログに出す。
+ *     エラーメッセージにも head を含めてクライアント側でも一目で見える状態にする。
+ */
+function safeParseClaudeJson(raw, label = 'claude-json') {
+  const stripped = raw.replace(/```(?:json)?\s*/g, '').replace(/```/g, '').trim();
+  try {
+    return JSON.parse(stripped);
+  } catch (e1) {
+    const m = stripped.match(/\{[\s\S]*\}/);
+    if (m) {
+      try {
+        return JSON.parse(m[0]);
+      } catch (e2) {
+        console.error(`[${label}] JSON.parse failed (after extraction). Raw head (500):`);
+        console.error(stripped.slice(0, 500));
+        console.error(`[${label}] Raw tail (300):`);
+        console.error(stripped.slice(-300));
+        const headExcerpt = stripped.slice(0, 120).replace(/\s+/g, ' ');
+        throw new Error(
+          `Claude JSON parse failed: ${e2.message}. Raw head: ${headExcerpt}…`,
+        );
+      }
+    }
+    console.error(`[${label}] No JSON object found in response. Raw head (500):`);
+    console.error(stripped.slice(0, 500));
+    const headExcerpt = stripped.slice(0, 120).replace(/\s+/g, ' ');
+    throw new Error(
+      `Claude returned no JSON object: ${e1.message}. Raw head: ${headExcerpt}…`,
+    );
+  }
 }
 
 // ffmpeg -i だけ走らせると stderr に "Duration: HH:MM:SS.xx" が出る。
@@ -451,7 +488,7 @@ app.post('/analyze-video', upload.single('file'), async (req, res) => {
         () =>
           anthropic.messages.create({
             model,
-            max_tokens: 8192,
+            max_tokens: 16000,
             messages: [
               {
                 role: 'user',
@@ -472,8 +509,7 @@ app.post('/analyze-video', upload.single('file'), async (req, res) => {
       return res.status(502).json({ error: 'Claude Vision returned empty content' });
     }
 
-    const stripped = raw.replace(/```(?:json)?\s*/g, '').replace(/```/g, '');
-    const parsed = JSON.parse(stripped);
+    const parsed = safeParseClaudeJson(raw, 'analyze-video');
 
     console.log(`[analyze-video] Found ${parsed.screenTexts?.length ?? 0} screen texts, ${parsed.phrases?.length ?? 0} phrases`);
 
@@ -645,7 +681,7 @@ async function processLocalVideoForJob(jobId, videoPath) {
         () =>
           anthropic.messages.create({
             model,
-            max_tokens: 8192,
+            max_tokens: 16000,
             messages: [
               {
                 role: 'user',
@@ -660,8 +696,7 @@ async function processLocalVideoForJob(jobId, videoPath) {
     const ocrBlock = ocrResponse.content.find((b) => b.type === 'text');
     const ocrRaw = ocrBlock?.type === 'text' ? ocrBlock.text : '';
     if (!ocrRaw) throw new Error('Claude Vision returned empty content');
-    const ocrStripped = ocrRaw.replace(/```(?:json)?\s*/g, '').replace(/```/g, '');
-    const ocrParsed = JSON.parse(ocrStripped);
+    const ocrParsed = safeParseClaudeJson(ocrRaw, `job ${jobId} OCR`);
 
     console.log(
       `[job ${jobId}] OCR: ${ocrParsed.screenTexts?.length ?? 0} texts, ${ocrParsed.phrases?.length ?? 0} phrases, ${ocrParsed.scriptTurns?.length ?? 0} turns`,
