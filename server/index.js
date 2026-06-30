@@ -299,6 +299,57 @@ function runFfmpeg(args) {
   });
 }
 
+// ffmpeg -i だけ走らせると stderr に "Duration: HH:MM:SS.xx" が出る。
+// ffprobe を別途インストールせずに済むのでこのまま使う。
+function probeDurationSec(inputPath) {
+  return new Promise((resolve) => {
+    execFile(ffmpegPath, ['-i', inputPath], { timeout: 30_000 }, (_err, _stdout, stderr) => {
+      const m = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/i.exec(stderr || '');
+      if (!m) {
+        resolve(null);
+        return;
+      }
+      const [, h, mn, s] = m;
+      const sec = Number(h) * 3600 + Number(mn) * 60 + Number(s);
+      resolve(Number.isFinite(sec) ? sec : null);
+    });
+  });
+}
+
+/**
+ * OCR 用フレームを「動画全体に均等分散」して抽出する。
+ * 旧実装は fps=1 + 先頭60フレーム + .slice(0,20) で動画先頭 20 秒しか OCR していなかった。
+ * targetCount 枚を duration 全体に散らすことで、長尺動画でも末尾のスクリプトを拾える。
+ *
+ * 動画が短すぎる (duration < targetCount) 場合は 1 fps で全フレーム取得にフォールバック。
+ */
+async function extractFramesEvenly(videoPath, framesDir, targetCount = 30) {
+  fs.mkdirSync(framesDir, { recursive: true });
+  const duration = await probeDurationSec(videoPath);
+
+  if (!duration || duration < targetCount) {
+    // duration 取得失敗 or 動画が短い: 1 fps で targetCount 枚まで取得
+    await runFfmpeg([
+      '-i', videoPath,
+      '-vf', 'fps=1',
+      '-frames:v', String(targetCount),
+      '-q:v', '3',
+      path.join(framesDir, 'frame-%03d.jpg'),
+    ]);
+    return;
+  }
+
+  // duration / targetCount 秒に 1 枚 = 動画全体に targetCount 枚均等配置
+  const stepSec = duration / targetCount;
+  await runFfmpeg([
+    '-i', videoPath,
+    '-vf', `fps=1/${stepSec}`,
+    '-frames:v', String(targetCount),
+    '-q:v', '3',
+    path.join(framesDir, 'frame-%03d.jpg'),
+  ]);
+}
+
 const OCR_PROMPT = `You are analyzing screenshots from an English learning video.
 Each image is a frame captured from the video at different timestamps.
 
@@ -336,7 +387,7 @@ Rules:
 - Extract ALL visible English text from the video frames
 - Keep the original text exactly as shown (spelling, capitalization, punctuation)
 - screenTexts should contain every unique piece of text found, in order of appearance
-- phrases should contain ALL key phrases for an English learner (up to 15)
+- phrases should contain EVERY distinct key phrase shown in the frames — do NOT artificially cap the count. If the video has 30 phrases, return 30. If 5, return 5.
 - If the same text appears across multiple frames, include it only once
 - All explanations (translation, context, notes) should be in Japanese
 - scriptTurns: if the video shows a conversation/dialogue, list each line in order with the speaker identified. If there is no clear conversation, return an empty array.
@@ -363,25 +414,15 @@ app.post('/analyze-video', upload.single('file'), async (req, res) => {
 
     console.log(`[analyze-video] Processing: ${req.file.originalname}`);
 
-    // フレーム抽出用ディレクトリ
+    // フレームを「動画全体に均等分散」させて抽出（長尺対応）
     const framesDir = path.join(os.tmpdir(), `et-frames-${Date.now()}`);
-    fs.mkdirSync(framesDir, { recursive: true });
-
-    // 1秒ごとにフレームを抽出（最大60枚）
-    await runFfmpeg([
-      '-i', videoPath,
-      '-vf', 'fps=1',
-      '-frames:v', '60',
-      '-q:v', '3',
-      path.join(framesDir, 'frame-%03d.jpg'),
-    ]);
+    await extractFramesEvenly(videoPath, framesDir, 30);
 
     const frameFiles = fs.readdirSync(framesDir)
       .filter((f) => f.endsWith('.jpg'))
-      .sort()
-      .slice(0, 20);
+      .sort();
 
-    console.log(`[analyze-video] Extracted ${frameFiles.length} frames`);
+    console.log(`[analyze-video] Extracted ${frameFiles.length} frames (evenly distributed)`);
 
     if (frameFiles.length === 0) {
       return res.status(400).json({ error: 'No frames could be extracted from the video' });
@@ -410,7 +451,7 @@ app.post('/analyze-video', upload.single('file'), async (req, res) => {
         () =>
           anthropic.messages.create({
             model,
-            max_tokens: 4096,
+            max_tokens: 8192,
             messages: [
               {
                 role: 'user',
@@ -568,26 +609,19 @@ async function processLocalVideoForJob(jobId, videoPath) {
     setJob(jobId, { status: 'ocr', stage: '画面テキスト読み取り中' });
     const ts = Date.now();
     const framesDir = path.join(os.tmpdir(), `et-frames-${ts}-${jobId}`);
-    fs.mkdirSync(framesDir, { recursive: true });
     tmpDirs.push(framesDir);
 
-    await runFfmpeg([
-      '-i', videoPath,
-      '-vf', 'fps=1',
-      '-frames:v', '60',
-      '-q:v', '3',
-      path.join(framesDir, 'frame-%03d.jpg'),
-    ]);
+    // 動画全体に 30 枚を均等分散して抽出（長尺の末尾スクリプトも拾うため）
+    await extractFramesEvenly(videoPath, framesDir, 30);
 
     const frameFiles = fs.readdirSync(framesDir)
       .filter((f) => f.endsWith('.jpg'))
-      .sort()
-      .slice(0, 20);
+      .sort();
 
     if (frameFiles.length === 0) {
       throw new Error('No frames could be extracted from the video');
     }
-    console.log(`[job ${jobId}] Extracted ${frameFiles.length} frames`);
+    console.log(`[job ${jobId}] Extracted ${frameFiles.length} frames (evenly distributed)`);
 
     const imageContents = frameFiles.map((f) => {
       const imgPath = path.join(framesDir, f);
@@ -611,7 +645,7 @@ async function processLocalVideoForJob(jobId, videoPath) {
         () =>
           anthropic.messages.create({
             model,
-            max_tokens: 4096,
+            max_tokens: 8192,
             messages: [
               {
                 role: 'user',
