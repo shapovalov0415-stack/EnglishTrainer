@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as DocumentPicker from 'expo-document-picker';
+import { useShareIntent } from 'expo-share-intent';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { CompositeScreenProps } from '@react-navigation/native';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
@@ -68,9 +69,9 @@ type LoadingState =
 const LOADING_LABELS: Record<LoadingState, string> = {
   idle: '',
   extracting: '抽出中...',
-  downloading: 'サーバーがダウンロード中...',
+  downloading: 'サーバー接続中... (初回は起動に 30〜60 秒)',
   analyzing: '解析中（OCR + 音声抽出）...',
-  uploading: 'アップロード中...',
+  uploading: 'アップロード中... (初回は起動に 30〜60 秒)',
   reading_screen: '画面テキスト読み取り中...',
   transcribing: '音声解析中...',
 };
@@ -81,6 +82,12 @@ function deriveTitleFromUrl(url: string): string {
   try {
     const u = new URL(url);
     const last = u.pathname.split('/').filter(Boolean).pop() ?? '';
+    // Instagram のリール/投稿はショートコードだけだと分かりにくいので日付を添える
+    if (/(^|\.)instagram\.com$|(^|\.)instagr\.am$/i.test(u.hostname)) {
+      const d = new Date();
+      const stamp = `${d.getMonth() + 1}/${d.getDate()}`;
+      return `Instagram ${stamp} (${last.slice(0, 12)})`;
+    }
     const noExt = last.replace(/\.[^.]+$/, '');
     const decoded = decodeURIComponent(noExt);
     return decoded.slice(0, 40) || u.hostname;
@@ -144,6 +151,25 @@ export default function HomeScreen({ navigation }: Props) {
       : pendingSource === 'text'
         ? (input.trim().split('\n')[0].slice(0, 40) ?? '')
         : '';
+
+  // ---------------------------------------------------------------------------
+  // 共有インテント (Android share sheet):
+  //   Instagram 等で「共有 → EnglishTrainer」した URL を動画 URL 欄に流し込み、
+  //   保存モーダルを開く。あとは通常の URL フロー（yt-dlp がサーバー側で解決）。
+  // ---------------------------------------------------------------------------
+  const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntent();
+  useEffect(() => {
+    if (!hasShareIntent) return;
+    const raw = shareIntent?.webUrl ?? shareIntent?.text ?? '';
+    const match = String(raw).match(/https?:\/\/\S+/);
+    resetShareIntent();
+    if (!match) return;
+    setSelectedFiles([]);
+    setVideoUrl(match[0]);
+    setPendingSource('video');
+    // Practice 等のスタック画面が上に載っていても Home を前面に出す
+    navigation.navigate('MainTabs', { screen: 'HomeTab' });
+  }, [hasShareIntent, shareIntent, resetShareIntent, navigation]);
 
   // ---------------------------------------------------------------------------
   // DocumentPicker でローカル mp4 を複数選ぶ
@@ -475,7 +501,7 @@ export default function HomeScreen({ navigation }: Props) {
         setVideoUrl('');
         Alert.alert(
           '解析を開始しました',
-          `「${finalTitle}」を処理中です。アプリを閉じても大丈夫です。\n完了するとフォルダータブに表示されます。`,
+          `「${finalTitle}」を処理中です。\n\nアプリを閉じても大丈夫です。完了するとフォルダータブに表示されます。\n\n※ 複数同時アップロード時は、サーバーのレート制限対策で 1 件ずつ順番に処理されます（各 1〜2 分）。`,
         );
       } catch (e: unknown) {
         Alert.alert(
@@ -534,7 +560,7 @@ export default function HomeScreen({ navigation }: Props) {
     if (successCount > 0 && errorCount === 0) {
       Alert.alert(
         '解析を開始しました',
-        `${successCount} 件のレッスンを処理中です。アプリを閉じても大丈夫です。\n完了するとフォルダータブに表示されます。`,
+        `${successCount} 件のレッスンを処理中です。\n\nアプリを閉じても大丈夫です。完了するとフォルダータブに表示されます。\n\n※ サーバーのレート制限対策で 1 件ずつ順番に処理されます（各 1〜2 分）。`,
       );
     } else if (successCount > 0 && errorCount > 0) {
       Alert.alert(

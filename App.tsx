@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, ScrollView, StyleSheet } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { ShareIntentProvider } from 'expo-share-intent';
 import RootNavigator from './src/navigation/RootNavigator';
 
 type BoundaryState = { error: Error | null };
@@ -56,12 +57,14 @@ const styles = StyleSheet.create({
 
 export default function App() {
   return (
-    <ErrorBoundary>
-      <SafeAreaProvider>
-        <NavigationContainer>
-          <RootNavigator />
-        </NavigationContainer>
-      </SafeAreaProvider>
-    </ErrorBoundary>
+    <ShareIntentProvider>
+      <ErrorBoundary>
+        <SafeAreaProvider>
+          <NavigationContainer>
+            <RootNavigator />
+          </NavigationContainer>
+        </SafeAreaProvider>
+      </ErrorBoundary>
+    </ShareIntentProvider>
   );
 }
