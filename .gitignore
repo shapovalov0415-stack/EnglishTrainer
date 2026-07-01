@@ -39,6 +39,10 @@ server/.env
 # server-side generated cache (TTS mp3, 再生成可能)
 server/audio_cache/
 
+# yt-dlp binary (render.yaml buildCommand / brew で取得)
+server/yt-dlp
+server/yt-dlp_*
+
 # typescript
 *.tsbuildinfo
 

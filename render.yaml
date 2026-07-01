@@ -5,7 +5,8 @@ services:
     plan: free
     region: singapore
     rootDir: server
-    buildCommand: npm install
+    # yt-dlp: Instagram/YouTube 等のページ URL から動画を解決するために取得
+    buildCommand: npm install && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o yt-dlp && chmod +x yt-dlp
     startCommand: npm start
     healthCheckPath: /health
     autoDeploy: true

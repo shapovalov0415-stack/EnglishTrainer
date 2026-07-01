@@ -775,6 +775,105 @@ async function processLocalVideoForJob(jobId, videoPath) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// yt-dlp: Instagram / YouTube / TikTok などの「ページ URL」から動画を落とす。
+// 直リンク mp4 は従来どおり fetch で落とすので、このパスは SNS ページ URL 専用。
+//
+// バイナリの解決順:
+//   1. env YT_DLP_PATH
+//   2. server/yt-dlp (render.yaml の buildCommand でダウンロードされる)
+//   3. PATH 上の yt-dlp (ローカル開発: brew install yt-dlp)
+// ---------------------------------------------------------------------------
+
+function resolveYtDlpPath() {
+  const candidates = [
+    process.env.YT_DLP_PATH,
+    path.join(__dirname, 'yt-dlp'),
+  ].filter(Boolean);
+  for (const p of candidates) {
+    try {
+      fs.accessSync(p, fs.constants.X_OK);
+      return p;
+    } catch {
+      /* try next */
+    }
+  }
+  return 'yt-dlp';
+}
+
+/** yt-dlp を使うべき SNS ページ URL かどうか（直リンク mp4 は false） */
+function isPageVideoUrl(url) {
+  let host = '';
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return false;
+  }
+  return /(^|\.)(instagram\.com|instagr\.am|youtube\.com|youtu\.be|tiktok\.com|x\.com|twitter\.com|facebook\.com|fb\.watch)$/i.test(
+    host,
+  );
+}
+
+/**
+ * yt-dlp でページ URL から mp4 をダウンロードする。
+ *
+ * Instagram はクラウド IP からの匿名アクセスを弾くことがある。その場合は
+ * ブラウザ拡張 (Get cookies.txt 等) でエクスポートした cookies.txt を
+ * base64 にして env INSTAGRAM_COOKIES_B64 に入れると回避できる。
+ */
+async function downloadWithYtDlp(url, outPath, label) {
+  const bin = resolveYtDlpPath();
+  const args = [
+    '--no-playlist',
+    '--no-warnings',
+    '-f', 'best[ext=mp4]/best',
+    '--merge-output-format', 'mp4',
+    '--ffmpeg-location', ffmpegPath,
+    '--max-filesize', '300M',
+    '-o', outPath,
+    url,
+  ];
+
+  let cookiesFile = null;
+  if (process.env.INSTAGRAM_COOKIES_B64 && /instagram\.com|instagr\.am/i.test(url)) {
+    cookiesFile = path.join(os.tmpdir(), `ig-cookies-${Date.now()}.txt`);
+    fs.writeFileSync(
+      cookiesFile,
+      Buffer.from(process.env.INSTAGRAM_COOKIES_B64, 'base64'),
+    );
+    args.unshift('--cookies', cookiesFile);
+  }
+
+  try {
+    await new Promise((resolve, reject) => {
+      execFile(bin, args, { timeout: 180_000 }, (err, stdout, stderr) => {
+        if (err) {
+          // yt-dlp のエラーメッセージは stderr の末尾数行に核心があることが多い
+          const detail = (stderr || err.message || '')
+            .split('\n')
+            .filter(Boolean)
+            .slice(-4)
+            .join(' | ');
+          reject(new Error(`yt-dlp failed: ${detail}`));
+        } else {
+          resolve(stdout);
+        }
+      });
+    });
+  } finally {
+    if (cookiesFile) {
+      try { fs.unlinkSync(cookiesFile); } catch { /* ignore */ }
+    }
+  }
+
+  if (!fs.existsSync(outPath)) {
+    throw new Error('yt-dlp finished but output file was not created');
+  }
+  console.log(
+    `[${label}] yt-dlp downloaded ${(fs.statSync(outPath).size / 1024 / 1024).toFixed(1)} MB`,
+  );
+}
+
 /** URL からダウンロードしたうえで共通パイプラインへ渡す */
 async function runAnalyzeJob(jobId, url) {
   const tmpFiles = [];
@@ -782,22 +881,30 @@ async function runAnalyzeJob(jobId, url) {
     setJob(jobId, { status: 'downloading', stage: 'ダウンロード中' });
     console.log(`[job ${jobId}] Downloading: ${url}`);
 
-    const response = await fetch(url, { redirect: 'follow' });
-    if (!response.ok) {
-      throw new Error(`Upstream responded ${response.status}`);
-    }
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType && !/video|octet-stream|mp4|quicktime/i.test(contentType)) {
-      console.warn(`[job ${jobId}] Unexpected content-type: ${contentType}`);
-    }
-    const arrayBuffer = await response.arrayBuffer();
-    const videoBuffer = Buffer.from(arrayBuffer);
-
     const videoPath = path.join(os.tmpdir(), `et-url-${Date.now()}-${jobId}.mp4`);
-    fs.writeFileSync(videoPath, videoBuffer);
-    tmpFiles.push(videoPath);
 
-    const sizeMB = videoBuffer.length / (1024 * 1024);
+    if (isPageVideoUrl(url)) {
+      // Instagram / YouTube 等のページ URL → yt-dlp で mp4 を解決
+      setJob(jobId, { stage: '動画リンク解決中 (yt-dlp)' });
+      await downloadWithYtDlp(url, videoPath, `job ${jobId}`);
+      tmpFiles.push(videoPath);
+    } else {
+      // 直リンク mp4 → 従来どおり fetch
+      const response = await fetch(url, { redirect: 'follow' });
+      if (!response.ok) {
+        throw new Error(`Upstream responded ${response.status}`);
+      }
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType && !/video|octet-stream|mp4|quicktime/i.test(contentType)) {
+        console.warn(`[job ${jobId}] Unexpected content-type: ${contentType}`);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      const videoBuffer = Buffer.from(arrayBuffer);
+      fs.writeFileSync(videoPath, videoBuffer);
+      tmpFiles.push(videoPath);
+    }
+
+    const sizeMB = fs.statSync(videoPath).size / (1024 * 1024);
     console.log(`[job ${jobId}] Downloaded ${sizeMB.toFixed(1)} MB`);
 
     await processLocalVideoForJob(jobId, videoPath);
