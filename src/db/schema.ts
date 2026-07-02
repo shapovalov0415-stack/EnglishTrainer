@@ -129,6 +129,7 @@ async function initializeSchema(db: SQLite.SQLiteDatabase): Promise<void> {
   // ここが先に走らないと、sessions(folder_id) へのインデックスが作れない。
   await ensureSessionColumns(db);
   await ensurePhrasesColumns(db);
+  await ensureFoldersColumns(db);
 
   // Step 3: 全カラムが揃った状態でインデックスを作る。
   await db.execAsync(`
@@ -188,6 +189,32 @@ async function ensureSessionColumns(db: SQLite.SQLiteDatabase): Promise<void> {
     'active_phrases',
     'ALTER TABLE sessions ADD COLUMN active_phrases TEXT DEFAULT NULL',
   );
+  // クラウドバックアップ (Supabase) との対応付けキー。端末側で UUID を採番する。
+  await addColumn(
+    'sync_uuid',
+    'ALTER TABLE sessions ADD COLUMN sync_uuid TEXT DEFAULT NULL',
+  );
+}
+
+/**
+ * folders にクラウドバックアップ用の sync_uuid を追加する。
+ */
+async function ensureFoldersColumns(db: SQLite.SQLiteDatabase): Promise<void> {
+  const rows = await db.getAllAsync<{ name: string }>(
+    'PRAGMA table_info(folders)',
+  );
+  const names = new Set(rows.map((r) => r.name));
+  if (names.has('sync_uuid')) return;
+  try {
+    await db.execAsync(
+      'ALTER TABLE folders ADD COLUMN sync_uuid TEXT DEFAULT NULL',
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/duplicate column/i.test(msg)) {
+      console.warn('ensureFoldersColumns: failed to add sync_uuid', e);
+    }
+  }
 }
 
 /**
@@ -616,6 +643,8 @@ export async function moveSessionToFolder(
 export interface FolderRow {
   id: number;
   name: string;
+  /** クラウドバックアップ (Supabase et_folders) との対応付け UUID */
+  sync_uuid?: string | null;
   created_at: string;
 }
 
@@ -1038,6 +1067,8 @@ export interface SessionRow {
    * 形式: {"activePhrases":[0,2,3],"speakerAssign":[0,-1,1,0]}
    */
   active_phrases: string | null;
+  /** クラウドバックアップ (Supabase et_sessions) との対応付け UUID */
+  sync_uuid: string | null;
   created_at: string;
   updated_at: string;
 }

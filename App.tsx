@@ -56,6 +56,17 @@ const styles = StyleSheet.create({
 });
 
 export default function App() {
+  // 起動から少し置いて、ログイン済みならクラウドへ自動バックアップする
+  // （前回から 10 分以内ならスキップされる）。
+  React.useEffect(() => {
+    const timer = setTimeout(() => {
+      import('./src/utils/cloudSync')
+        .then((m) => m.maybeAutoBackup())
+        .catch((e) => console.warn('auto backup skipped:', e));
+    }, 8000);
+    return () => clearTimeout(timer);
+  }, []);
+
   return (
     <ShareIntentProvider>
       <ErrorBoundary>

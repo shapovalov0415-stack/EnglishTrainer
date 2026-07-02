@@ -14,7 +14,10 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://englishtrainer-api.onrender.com"
+        "EXPO_PUBLIC_API_BASE_URL": "https://englishtrainer-api.onrender.com",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://xqxfyemszxpliffvjvvs.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_koNhkPcx89at7apAKsk9EA_hyLvg6aT",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "773902815068-5alonqdjlht8sh2u9ubmf6fk6tbcdlr4.apps.googleusercontent.com"
       }
     },
     "production": {
@@ -23,7 +26,10 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://englishtrainer-api.onrender.com"
+        "EXPO_PUBLIC_API_BASE_URL": "https://englishtrainer-api.onrender.com",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://xqxfyemszxpliffvjvvs.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_koNhkPcx89at7apAKsk9EA_hyLvg6aT",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "773902815068-5alonqdjlht8sh2u9ubmf6fk6tbcdlr4.apps.googleusercontent.com"
       }
     }
   },

@@ -51,6 +51,7 @@ import {
   updatePendingJob,
   type PendingJob,
 } from '../utils/pendingJobsStorage';
+import { maybeAutoBackup } from '../utils/cloudSync';
 
 type Props = CompositeScreenProps<
   BottomTabScreenProps<RootTabParamList, 'HomeTab'>,
@@ -352,6 +353,8 @@ export default function HomeScreen({ navigation }: Props) {
           });
           await removePendingJob(job.jobId);
           await deleteAnalyzeJob(job.jobId);
+          // ログイン済みなら新しいセッションを静かにクラウドへバックアップ
+          maybeAutoBackup();
           if (isMountedRef.current) {
             dropActiveJob(job.jobId);
             if (saveErrors.length > 0) {

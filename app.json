@@ -39,6 +39,12 @@
         {
           "androidIntentFilters": ["text/*"]
         }
+      ],
+      [
+        "@react-native-google-signin/google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.773902815068-7k306prlonk47r6fiqbb48k67fghm5ch"
+        }
       ]
     ],
     "extra": {

@@ -29,6 +29,7 @@ import {
 } from '../db/schema';
 import SessionCard from '../components/SessionCard';
 import SessionActionsModal from '../components/SessionActionsModal';
+import AccountModal from '../components/AccountModal';
 
 type Props = CompositeScreenProps<
   NativeStackScreenProps<FolderStackParamList, 'FolderList'>,
@@ -47,6 +48,7 @@ export default function HistoryScreen({ navigation }: Props) {
   const [createFolderOpen, setCreateFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [creatingFolder, setCreatingFolder] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -195,6 +197,13 @@ export default function HistoryScreen({ navigation }: Props) {
             <Text style={styles.subHeader}>{totalSessions} セッション</Text>
           </View>
           <TouchableOpacity
+            style={styles.cloudBtn}
+            onPress={() => setAccountOpen(true)}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.cloudBtnText}>{'☁️'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
             style={styles.addFolderBtn}
             onPress={() => setCreateFolderOpen(true)}
             activeOpacity={0.85}
@@ -202,6 +211,12 @@ export default function HistoryScreen({ navigation }: Props) {
             <Text style={styles.addFolderBtnText}>{'\u002B'}</Text>
           </TouchableOpacity>
         </View>
+
+        <AccountModal
+          visible={accountOpen}
+          onClose={() => setAccountOpen(false)}
+          onDataChanged={load}
+        />
 
         {folders.length > 0 && (
           <>
@@ -396,6 +411,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 4,
+  },
+  cloudBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+    marginRight: 8,
+  },
+  cloudBtnText: {
+    fontSize: 18,
   },
   addFolderBtnText: {
     color: '#A78BFA',
