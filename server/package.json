@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch index.js",
-    "start": "node index.js"
+    "start": "node index.js",
+    "postinstall": "node scripts/get-yt-dlp.mjs"
   },
   "engines": {
     "node": ">=20.0.0"
