@@ -14,7 +14,10 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "リアルタイム音声会話で、あなたの発話を AI に届けるためにマイクを使用します。"
+      }
     },
     "android": {
       "package": "com.englishtrainer.app",
@@ -45,7 +48,8 @@
         {
           "iosUrlScheme": "com.googleusercontent.apps.773902815068-7k306prlonk47r6fiqbb48k67fghm5ch"
         }
-      ]
+      ],
+      "@config-plugins/react-native-webrtc"
     ],
     "extra": {
       "eas": {

@@ -29,6 +29,8 @@ const apiKey = process.env.ANTHROPIC_API_KEY;
 const model = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
 
 const openaiApiKey = process.env.OPENAI_API_KEY;
+// Realtime 会話モデル。id は更新されうるので env で差し替え可能にしておく。
+const realtimeModel = process.env.OPENAI_REALTIME_MODEL ?? 'gpt-4o-mini-realtime-preview';
 
 const anthropic = apiKey ? new Anthropic({ apiKey }) : null;
 const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
@@ -1120,6 +1122,82 @@ app.post('/tts', async (req, res) => {
     return res.sendFile(filePath);
   } catch (e) {
     console.error('/tts failed:', e);
+    return res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /realtime/token
+//
+//   OpenAI Realtime API (音声リアルタイム会話) 用のエフェメラルトークンを発行する。
+//   端末に本物の OPENAI_API_KEY を置かないため、サーバーがここで短命トークン
+//   (ek_..., 約 1 分有効) を作って返す。端末はこのトークンで WebRTC 接続する。
+//
+//   body:
+//     instructions?: string  会話の役割・シナリオ・使わせたいフレーズ等
+//     voice?:        string  出力音声 (alloy / marin / cedar など)
+// ---------------------------------------------------------------------------
+app.post('/realtime/token', async (req, res) => {
+  try {
+    if (!openaiApiKey) {
+      return res
+        .status(500)
+        .json({ error: 'OPENAI_API_KEY is not set. Check server/.env' });
+    }
+
+    const { instructions, voice } = req.body ?? {};
+
+    const session = {
+      type: 'realtime',
+      model: realtimeModel,
+      audio: {
+        input: {
+          // ユーザー発話の文字起こし（会話後の Claude フィードバックに使う）
+          transcription: { model: 'whisper-1' },
+          // サーバー VAD: ユーザーが話し終えたら自動でターンを渡す
+          turn_detection: {
+            type: 'server_vad',
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 600,
+          },
+        },
+        output: {
+          voice: typeof voice === 'string' && voice ? voice : 'marin',
+        },
+      },
+    };
+    if (typeof instructions === 'string' && instructions.trim()) {
+      session.instructions = instructions;
+    }
+
+    const r = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${openaiApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ session }),
+    });
+
+    const data = await r.json();
+    if (!r.ok) {
+      console.error('[realtime/token] OpenAI error:', data);
+      return res.status(502).json({
+        error: 'Failed to mint realtime token',
+        detail: data?.error?.message ?? JSON.stringify(data),
+      });
+    }
+
+    // 新形式は top-level value、旧形式は client_secret.value を返すため両対応。
+    const token = data?.value ?? data?.client_secret?.value;
+    if (!token) {
+      return res.status(502).json({ error: 'No ephemeral token in response' });
+    }
+
+    return res.json({ token, model: realtimeModel });
+  } catch (e) {
+    console.error('[realtime/token] failed:', e);
     return res.status(500).json({ error: e?.message ?? String(e) });
   }
 });

@@ -50,6 +50,8 @@ import { getDatabase } from '../db/schema';
 import GrowthChart from '../components/GrowthChart';
 import CongratulationModal from '../components/CongratulationModal';
 import VoiceSettingsMenu from '../components/VoiceSettingsMenu';
+import RealtimeConversation from '../components/RealtimeConversation';
+import type { RealtimeTurn } from '../utils/realtime';
 import {
   saveStep3Data,
   getStorageHintText,
@@ -66,7 +68,12 @@ const AI_CONFIG: AIConfig = {
 const MIN_TURNS = 3;
 const MAX_TURNS = 5;
 
-type ScreenPhase = 'loading' | 'chat' | 'generating_feedback' | 'feedback';
+type ScreenPhase =
+  | 'loading'
+  | 'chat'
+  | 'realtime'
+  | 'generating_feedback'
+  | 'feedback';
 
 export default function ExtensionScreen({ route, navigation }: Props) {
   const { sessionId, sessionFolder } = route.params;
@@ -372,13 +379,14 @@ export default function ExtensionScreen({ route, navigation }: Props) {
   }, [recorder, sendMessage]);
 
   // --- 会話終了 & 成長分析フィードバック ---
-  const handleFinish = useCallback(async () => {
+  const handleFinish = useCallback(async (messagesOverride?: ChatMessage[]) => {
+    const convo = messagesOverride ?? messages;
     setPhase('generating_feedback');
 
     try {
       const targetPhrases = phrases.map((p) => p.phrase);
       const fb = await generateExtensionFeedback(
-        messages,
+        convo,
         targetPhrases,
         pastPerformance,
         AI_CONFIG,
@@ -386,7 +394,7 @@ export default function ExtensionScreen({ route, navigation }: Props) {
       setFeedback(fb);
 
       const feedbackJson = JSON.stringify(fb);
-      const conversationText = messages
+      const conversationText = convo
         .map((m) => `${m.role}: ${m.content}`)
         .join('\n');
 
@@ -402,7 +410,7 @@ export default function ExtensionScreen({ route, navigation }: Props) {
         try {
           await saveStep3Data(sessionFolder, {
             scenario: scenarioLabel,
-            messages: messages.map((m) => ({ role: m.role, content: m.content })),
+            messages: convo.map((m) => ({ role: m.role, content: m.content })),
             score: fb.score,
             feedback: {
               overallComment: fb.overallComment,
@@ -426,6 +434,30 @@ export default function ExtensionScreen({ route, navigation }: Props) {
       setPhase('chat');
     }
   }, [messages, phrases, sessionId, pastPerformance, sessionFolder, scenarioLabel]);
+
+  // --- リアルタイム会話モード ---
+  // RealtimeConversation が集めた文字起こしを ChatMessage[] に変換し、
+  // 既存の Claude フィードバック生成パイプラインへそのまま流す。
+  const handleRealtimeEnd = useCallback(
+    (turns: RealtimeTurn[]) => {
+      const mapped: ChatMessage[] = turns.map((t) => ({
+        role: t.role,
+        content: t.text,
+        timestamp: Date.now(),
+      }));
+      setMessages(mapped);
+      if (mapped.filter((m) => m.role === 'user').length === 0) {
+        // 一言も話していなければ評価せずチャットへ戻す
+        setPhase('chat');
+        return;
+      }
+      handleFinish(mapped);
+    },
+    [handleFinish],
+  );
+
+  // 音声設定の gender に合わせて OpenAI の声を選ぶ
+  const realtimeVoice = voiceGender === 'male' ? 'cedar' : 'marin';
 
   const handleShareExport = useCallback(async () => {
     if (!sessionFolder) return;
@@ -592,6 +624,19 @@ export default function ExtensionScreen({ route, navigation }: Props) {
     );
   }
 
+  // --- Realtime 音声会話 ---
+  if (phase === 'realtime') {
+    return (
+      <RealtimeConversation
+        instructions={systemPrompt}
+        voice={realtimeVoice}
+        scenarioLabel={scenarioLabel}
+        onEnd={handleRealtimeEnd}
+        onCancel={() => setPhase('chat')}
+      />
+    );
+  }
+
   // --- Chat ---
   return (
     <KeyboardAvoidingView
@@ -627,13 +672,24 @@ export default function ExtensionScreen({ route, navigation }: Props) {
         {canFinish && (
           <TouchableOpacity
             style={styles.finishButton}
-            onPress={handleFinish}
+            onPress={() => handleFinish()}
             activeOpacity={0.7}
           >
             <Text style={styles.finishButtonText}>Finish</Text>
           </TouchableOpacity>
         )}
       </View>
+
+      {/* リアルタイム音声会話モードへの入口 */}
+      <TouchableOpacity
+        style={styles.realtimeEntryBtn}
+        onPress={() => setPhase('realtime')}
+        activeOpacity={0.8}
+      >
+        <Text style={styles.realtimeEntryText}>
+          {'\u{1F399}️'} リアルタイム音声で会話する
+        </Text>
+      </TouchableOpacity>
 
       {/* Messages */}
       <ScrollView
@@ -793,6 +849,21 @@ const styles = StyleSheet.create({
   },
   finishButtonText: {
     color: '#064E3B',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  realtimeEntryBtn: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+    backgroundColor: '#ECFDF5',
+    borderWidth: 1,
+    borderColor: '#6EE7B7',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  realtimeEntryText: {
+    color: '#047857',
     fontSize: 14,
     fontWeight: '700',
   },
@@ -996,7 +1067,7 @@ const styles = StyleSheet.create({
     width: 16,
   },
   feedbackItemText: {
-    color: '#E2E8F0',
+    color: '#1E293B',
     fontSize: 14,
     lineHeight: 20,
     flex: 1,
