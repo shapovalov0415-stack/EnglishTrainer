@@ -1202,6 +1202,145 @@ app.post('/realtime/token', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Cookgo 用エンドポイント: URL (Instagram Reel等) → mp4 動画 + キャプション
+//
+// Cookgo は自前バックエンドを持たないので、EnglishTrainer の yt-dlp +
+// INSTAGRAM_COOKIES_B64 資産を間借りする。
+//
+//   POST /cookgo/resolve-url         → { jobId, caption, title, videoSize }
+//   GET  /cookgo/media/:jobId        → video/mp4 stream
+//   DELETE /cookgo/media/:jobId      → 明示クリーンアップ (10分後に自動掃除)
+// ---------------------------------------------------------------------------
+
+const cookgoJobs = new Map();
+const COOKGO_JOB_TTL_MS = 10 * 60 * 1000;
+
+async function cookgoRunYtDlp(url, outPath) {
+  const bin = resolveYtDlpPath();
+  const args = [
+    '--no-playlist',
+    '--no-warnings',
+    '-f', 'best[ext=mp4]/best',
+    '--merge-output-format', 'mp4',
+    '--ffmpeg-location', ffmpegPath,
+    '--max-filesize', '100M',
+    '--write-info-json',
+    '-o', outPath,
+    url,
+  ];
+
+  let cookiesFile = null;
+  if (process.env.INSTAGRAM_COOKIES_B64 && /instagram\.com|instagr\.am/i.test(url)) {
+    cookiesFile = path.join(os.tmpdir(), `ig-cookies-${Date.now()}.txt`);
+    fs.writeFileSync(
+      cookiesFile,
+      Buffer.from(process.env.INSTAGRAM_COOKIES_B64, 'base64'),
+    );
+    args.unshift('--cookies', cookiesFile);
+  }
+
+  try {
+    await new Promise((resolve, reject) => {
+      execFile(bin, args, { timeout: 180_000 }, (err, stdout, stderr) => {
+        if (err) {
+          const detail = (stderr || err.message || '')
+            .split('\n')
+            .filter(Boolean)
+            .slice(-4)
+            .join(' | ');
+          reject(new Error(`yt-dlp failed: ${detail}`));
+        } else {
+          resolve(stdout);
+        }
+      });
+    });
+  } finally {
+    if (cookiesFile) {
+      try { fs.unlinkSync(cookiesFile); } catch { /* ignore */ }
+    }
+  }
+}
+
+function cookgoCleanupJob(jobId) {
+  const job = cookgoJobs.get(jobId);
+  if (!job) return;
+  for (const f of [job.videoPath, job.infoPath]) {
+    try { fs.unlinkSync(f); } catch { /* ignore */ }
+  }
+  cookgoJobs.delete(jobId);
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [jobId, job] of cookgoJobs.entries()) {
+    if (now - job.createdAt > COOKGO_JOB_TTL_MS) cookgoCleanupJob(jobId);
+  }
+}, 5 * 60 * 1000);
+
+app.post('/cookgo/resolve-url', async (req, res) => {
+  const { url } = req.body ?? {};
+  if (typeof url !== 'string' || !url.trim()) {
+    return res.status(400).json({ error: 'url is required' });
+  }
+
+  const jobId = `cg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const videoPath = path.join(os.tmpdir(), `cookgo-${jobId}.mp4`);
+  const infoPath = path.join(os.tmpdir(), `cookgo-${jobId}.info.json`);
+
+  try {
+    console.log(`[cookgo ${jobId}] resolving ${url}`);
+    await cookgoRunYtDlp(url, videoPath);
+
+    if (!fs.existsSync(videoPath)) {
+      throw new Error('yt-dlp finished but mp4 was not created');
+    }
+    const size = fs.statSync(videoPath).size;
+
+    let title = null;
+    let caption = null;
+    let uploader = null;
+    if (fs.existsSync(infoPath)) {
+      try {
+        const info = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
+        title = info.title ?? info.fulltitle ?? null;
+        caption = info.description ?? null;
+        uploader = info.uploader ?? info.channel ?? null;
+      } catch (e) {
+        console.warn(`[cookgo ${jobId}] failed to parse info json:`, e);
+      }
+    }
+
+    cookgoJobs.set(jobId, { videoPath, infoPath, createdAt: Date.now() });
+    console.log(`[cookgo ${jobId}] resolved ${(size / 1024 / 1024).toFixed(1)} MB`);
+
+    return res.json({ jobId, caption, title, uploader, videoSize: size });
+  } catch (e) {
+    for (const f of [videoPath, infoPath]) {
+      try { fs.unlinkSync(f); } catch { /* ignore */ }
+    }
+    console.error(`[cookgo ${jobId}] failed:`, e);
+    return res.status(500).json({
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+app.get('/cookgo/media/:jobId', (req, res) => {
+  const job = cookgoJobs.get(req.params.jobId);
+  if (!job || !fs.existsSync(job.videoPath)) {
+    return res.status(404).json({ error: 'job not found or expired' });
+  }
+  res.setHeader('Content-Type', 'video/mp4');
+  res.setHeader('Content-Length', String(fs.statSync(job.videoPath).size));
+  fs.createReadStream(job.videoPath).pipe(res);
+});
+
+app.delete('/cookgo/media/:jobId', (req, res) => {
+  cookgoCleanupJob(req.params.jobId);
+  res.json({ ok: true });
+});
+
 app.listen(port, () => {
   if (!apiKey) {
     console.warn('ANTHROPIC_API_KEY is not set. /chat/claude will return 500.');
